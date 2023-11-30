@@ -1,8 +1,10 @@
 # script to apply Bayesian inference to synthetic GBM data
 import jax.numpy as jnp
 import jax
-from jax import jit, vmap
+from jax import jit, grad, vmap
 from jax.scipy.stats import norm, gamma
+import seaborn as sns
+import matplotlib.pyplot as plt
 
 
 def get_data(params, delta_t, n, key):
@@ -60,10 +62,9 @@ def compute_probability(new_params, params, log_returns, delta_t):
 def mcmc_step(params, log_returns, delta_t, key):
     muk, sigmak, uk = jax.random.split(key, 3)
     # propose a step
-
     new_mu = jax.random.normal(muk)*0.1 + params[0]
+    # new_sigma = jax.random.gamma(sigmak, 1.0)
     new_sigma = params[1] * jnp.exp(jax.random.normal(sigmak)*0.01)
-
     new_params = jnp.array([new_mu, new_sigma])
 
     # compute the acceptance probability
@@ -86,14 +87,27 @@ def mcmc(params, log_returns, delta_t, key, num_steps):
             params, log_returns, delta_t, key)
         if accepted:
             samples.append(params)
+
+        # if idx % num_steps//10 == 0:
+        #     print(jnp.mean(jnp.array(samples), axis=0))
     return jnp.array(samples)
+
+
+def autocorrelation(data, max_lag):
+    N = len(data)
+    mean = jnp.mean(data)
+    var = jnp.var(data)
+    cor = []
+    for lag in range(max_lag):
+        cor.append(jnp.sum((data[:N-lag]-mean)*(data[lag:]-mean))/(N-lag)/var)
+    return jnp.array(cor)
 
 
 def main():
     # True Parameters
     true_params = jnp.array([0.1, 0.3])
     delta_t = 0.1
-    n = 5000
+    n = 1000
 
     # Generating the GBM data
     key = jax.random.PRNGKey(0)
@@ -104,17 +118,43 @@ def main():
     # compute the log returns
     log_returns = jnp.log(data[1:]/data[:-1])
 
-    num_steps = int(1e4)
+    num_steps = int(5e3)
     # start from expectation of prior
     start = jnp.array([0., 1.])
 
     key, subkey = jax.random.split(key)
-    samples = mcmc(start, log_returns,
-                   delta_t, subkey, num_steps)
+    samples = mcmc(start, log_returns, delta_t, subkey, num_steps)
 
+    # plot the samples to identify burn-in
+    fig, ax = plt.subplots()
+    ax.plot(samples[:, 0], label="$\mu$")
+    ax.plot(samples[:, 1], label="$\sigma$")
+    ax.legend()
+    ax.set_xlabel("Iteration")
+    ax.set_ylabel("Parameter Value")
+    ax.set_title("Equilibrium Detection: MCMC Samples")
+
+    # save the figure
+    fig.savefig("mcmc_samples.pdf", dpi=300)
+    plt.close(fig)
+
+    # compute autocorrelation
     burn_in = 500
-    samples = samples[burn_in:]
-    print(f"Expectation of Posterior: {jnp.mean(samples, axis=0)}")
+    mu_samples = samples[burn_in:, 0]
+    sigma_samples = samples[burn_in:, 1]
+    mu_autocorr = autocorrelation(mu_samples, burn_in)
+    sigma_outocorr = autocorrelation(sigma_samples, burn_in)
+
+    # plot the autocorrelation
+    fig, ax = plt.subplots()
+    ax.plot(mu_autocorr, label="$\mu$")
+    ax.plot(sigma_outocorr, label="$\sigma$")
+    ax.legend()
+    ax.set_xlabel("Lag")
+    ax.set_ylabel("Autocorrelation")
+    ax.set_title("Autocorrelation of MCMC Samples")
+    fig.savefig("mcmc_autocorr.pdf", dpi=300)
+    plt.close(fig)
 
 
 if __name__ == "__main__":

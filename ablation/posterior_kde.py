@@ -1,8 +1,10 @@
 # script to apply Bayesian inference to synthetic GBM data
 import jax.numpy as jnp
 import jax
-from jax import jit, vmap
+from jax import jit, grad, vmap
 from jax.scipy.stats import norm, gamma
+import seaborn as sns
+import matplotlib.pyplot as plt
 
 
 def get_data(params, delta_t, n, key):
@@ -60,10 +62,9 @@ def compute_probability(new_params, params, log_returns, delta_t):
 def mcmc_step(params, log_returns, delta_t, key):
     muk, sigmak, uk = jax.random.split(key, 3)
     # propose a step
-
     new_mu = jax.random.normal(muk)*0.1 + params[0]
+    # new_sigma = jax.random.gamma(sigmak, 1.0)
     new_sigma = params[1] * jnp.exp(jax.random.normal(sigmak)*0.01)
-
     new_params = jnp.array([new_mu, new_sigma])
 
     # compute the acceptance probability
@@ -86,35 +87,63 @@ def mcmc(params, log_returns, delta_t, key, num_steps):
             params, log_returns, delta_t, key)
         if accepted:
             samples.append(params)
+
+        # if idx % num_steps//10 == 0:
+        #     print(jnp.mean(jnp.array(samples), axis=0))
     return jnp.array(samples)
 
 
 def main():
     # True Parameters
     true_params = jnp.array([0.1, 0.3])
+    # T = 100.0
     delta_t = 0.1
-    n = 5000
+    ns = [100, 500, 1000, 5000, 10000]
 
-    # Generating the GBM data
-    key = jax.random.PRNGKey(0)
-    key, subkey = jax.random.split(key)
+    mcmc_samples = {}
 
-    data = get_data(true_params, delta_t, n, key=subkey)
+    for n in ns:
+        # Generating the GBM data
+        key = jax.random.PRNGKey(0)
+        key, subkey = jax.random.split(key)
 
-    # compute the log returns
-    log_returns = jnp.log(data[1:]/data[:-1])
+        data = get_data(true_params, delta_t, n, key=subkey)
 
-    num_steps = int(1e4)
-    # start from expectation of prior
-    start = jnp.array([0., 1.])
+        # compute the log returns
+        log_returns = jnp.log(data[1:]/data[:-1])
 
-    key, subkey = jax.random.split(key)
-    samples = mcmc(start, log_returns,
-                   delta_t, subkey, num_steps)
+        num_steps = int(1e4)
+        # start from expectation of prior
+        start = jnp.array([0., 1.])
 
-    burn_in = 500
-    samples = samples[burn_in:]
-    print(f"Expectation of Posterior: {jnp.mean(samples, axis=0)}")
+        key, subkey = jax.random.split(key)
+        samples = mcmc(start, log_returns,
+                       delta_t, subkey, num_steps)
+
+        mcmc_samples[n] = samples[samples.shape[0]//2:]
+        print(jnp.mean(mcmc_samples[n], axis=0))
+
+    # plot the kde from samples for mu and sigma separately
+    fig, ax = plt.subplots(1, 2, figsize=(8, 3))
+
+    for n in ns:
+        label = f'N={n}'
+        sns.kdeplot(
+            mcmc_samples[n][:, 0], ax=ax[0], label=label)
+        sns.kdeplot(
+            mcmc_samples[n][:, 1], ax=ax[1], label=label)
+
+    ax[0].legend()
+    ax[1].legend()
+    ax[0].set_xlabel('$\mu$')
+    ax[1].set_xlabel('$\sigma$')
+    ax[0].set_ylabel('Density')
+    ax[1].set_ylabel('Density')
+
+    title = 'Posterior Densities for $\mu$ and $\sigma$'
+    fig.suptitle(title)
+
+    plt.savefig('gbm_bayes.pdf', dpi=300)
 
 
 if __name__ == "__main__":
